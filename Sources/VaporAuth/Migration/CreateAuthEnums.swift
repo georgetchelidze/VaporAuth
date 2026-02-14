@@ -49,16 +49,14 @@ struct CreateAuthEnums: AsyncMigration {
 
     func revert(on database: any Database) async throws {
         guard let sql = database as? any SQLDatabase else { return }
-        try await sql.raw("""
-            DROP TYPE IF EXISTS auth.one_time_token_type;
-            DROP TYPE IF EXISTS auth.oauth_response_type;
-            DROP TYPE IF EXISTS auth.oauth_registration_type;
-            DROP TYPE IF EXISTS auth.oauth_client_type;
-            DROP TYPE IF EXISTS auth.oauth_authorization_status;
-            DROP TYPE IF EXISTS auth.factor_type;
-            DROP TYPE IF EXISTS auth.factor_status;
-            DROP TYPE IF EXISTS auth.code_challenge_method;
-            DROP TYPE IF EXISTS auth.aal_level;
-            """).run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.one_time_token_type;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.oauth_response_type;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.oauth_registration_type;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.oauth_client_type;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.oauth_authorization_status;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.factor_type;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.factor_status;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.code_challenge_method;").run()
+        try await sql.raw("DROP TYPE IF EXISTS auth.aal_level;").run()
     }
 }

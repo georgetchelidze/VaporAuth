@@ -18,14 +18,22 @@ struct CreateAuthRefreshTokens: AsyncMigration {
                 CONSTRAINT refresh_tokens_token_unique UNIQUE (token),
                 CONSTRAINT refresh_tokens_session_id_fkey FOREIGN KEY (session_id) REFERENCES auth.sessions(id) ON DELETE CASCADE
             );
-
+            """).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS refresh_tokens_parent_idx
                 ON auth.refresh_tokens (parent);
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS refresh_tokens_session_id_revoked_idx
                 ON auth.refresh_tokens (session_id, revoked);
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS refresh_tokens_updated_at_idx
                 ON auth.refresh_tokens (updated_at DESC);
-            """).run()
+            """
+        ).run()
     }
 
     func revert(on database: any Database) async throws {

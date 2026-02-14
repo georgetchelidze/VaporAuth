@@ -5,15 +5,23 @@ import FluentSQL
 struct HardenAuthUsersIndexes: AsyncMigration {
     func prepare(on database: any Database) async throws {
         guard let sql = database as? any SQLDatabase else { return }
-        try await sql.raw(
-            """
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS users_instance_id_email_idx
                 ON auth.users (instance_id, lower(email));
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS users_instance_id_idx
                 ON auth.users (instance_id);
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS users_is_anonymous_idx
                 ON auth.users (is_anonymous);
-
+            """
+        ).run()
+        try await sql.raw(
+            """
             DO $$
             BEGIN
                 IF NOT EXISTS (

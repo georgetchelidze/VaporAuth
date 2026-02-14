@@ -31,11 +31,19 @@ struct HardenAuthRefreshTokens: AsyncMigration {
                 END IF;
             END
             $$;
-
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS refresh_tokens_parent_idx
                 ON auth.refresh_tokens (parent);
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS refresh_tokens_session_id_revoked_idx
                 ON auth.refresh_tokens (session_id, revoked);
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS refresh_tokens_updated_at_idx
                 ON auth.refresh_tokens (updated_at DESC);
             """

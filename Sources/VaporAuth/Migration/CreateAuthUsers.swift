@@ -42,17 +42,28 @@ struct CreateAuthUsers: AsyncMigration {
                 deleted_at timestamptz,
                 is_anonymous boolean
             );
-
+            """).run()
+        try await sql.raw("""
             CREATE UNIQUE INDEX IF NOT EXISTS users_email_partial_key
                 ON auth.users (email)
                 WHERE is_sso_user = false;
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS users_instance_id_email_idx
                 ON auth.users (instance_id, lower(email));
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS users_instance_id_idx
                 ON auth.users (instance_id);
+            """
+        ).run()
+        try await sql.raw("""
             CREATE INDEX IF NOT EXISTS users_is_anonymous_idx
                 ON auth.users (is_anonymous);
-            """).run()
+            """
+        ).run()
     }
 
     func revert(on database: any Database) async throws {

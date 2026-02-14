@@ -15,7 +15,7 @@ struct CreateAuthSessions: AsyncMigration {
                 not_after timestamptz,
                 refreshed_at timestamptz,
                 user_agent text,
-                ip text,
+                ip inet,
                 tag text,
                 oauth_client_id uuid,
                 refresh_token_hmac_key text,

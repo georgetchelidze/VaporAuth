@@ -1,4 +1,5 @@
 import Fluent
+import FluentSQL
 import JWT
 import Vapor
 
@@ -168,9 +169,19 @@ private func passwordGrant(
     session.updatedAt = now
     session.refreshedAt = now
     session.aal = .aal1
-    session.ip = req.remoteAddress?.ipAddress
+    session.ip = nil
     session.userAgent = req.headers.first(name: .userAgent)
     try await session.save(on: req.db)
+
+    if let ipAddress = req.remoteAddress?.ipAddress,
+       let sessionID = session.id,
+       let sql = req.db as? any SQLDatabase {
+        do {
+            try await sql.raw("UPDATE auth.sessions SET ip = \(bind: ipAddress)::inet WHERE id = \(bind: sessionID)").run()
+        } catch {
+            req.logger.debug("VaporAuth: failed to persist session ip as inet: \(error)")
+        }
+    }
 
     let refreshToken = Auth.RefreshToken()
     refreshToken.token = [UUID().uuidString, UUID().uuidString].joined()

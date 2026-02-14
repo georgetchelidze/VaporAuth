@@ -474,6 +474,10 @@ private func me(req: Request) async throws -> Auth.UserResponse {
         throw Abort(.unauthorized, reason: "User not found")
     }
 
+    guard isUserActiveForSessionIssuance(user, now: Date()) else {
+        throw Abort(.unauthorized, reason: "User not found")
+    }
+
     return .init(
         id: resolvedID,
         email: user.email,
@@ -487,22 +491,40 @@ private func me(req: Request) async throws -> Auth.UserResponse {
 private func logout(req: Request) async throws -> HTTPStatus {
     let input = try req.content.decode(AuthLogoutRequest.self)
     guard let rawToken = input.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !rawToken.isEmpty,
-          let parts = parseRefreshToken(rawToken),
-          let session = try await Auth.Session.find(parts.sessionID, on: req.db),
-          let hmacKey = session.refreshTokenHmacKey
+          !rawToken.isEmpty
     else {
         return .noContent
     }
 
-    let tokenHash = hashRefreshToken(rawToken, hmacKey: hmacKey)
-    if let token = try await Auth.RefreshToken.query(on: req.db)
-        .filter(\.$sessionId == parts.sessionID)
-        .filter(\.$token == tokenHash)
-        .first() {
+    guard let parts = parseRefreshToken(rawToken) else {
+        return .noContent
+    }
+
+    try await req.db.transaction { db in
+        guard let session = try await Auth.Session.find(parts.sessionID, on: db),
+              let hmacKey = session.refreshTokenHmacKey
+        else {
+            return
+        }
+
+        let tokenHash = hashRefreshToken(rawToken, hmacKey: hmacKey)
+        guard let token = try await Auth.RefreshToken.query(on: db)
+            .filter(\.$sessionId == parts.sessionID)
+            .filter(\.$token == tokenHash)
+            .first()
+        else {
+            return
+        }
+
+        let now = Date()
         token.revoked = true
-        token.updatedAt = Date()
-        try await token.save(on: req.db)
+        token.updatedAt = now
+        try await token.save(on: db)
+
+        try await revokeSessionRefreshTokens(sessionID: parts.sessionID, now: now, on: db)
+        session.notAfter = now
+        session.updatedAt = now
+        try await session.save(on: db)
     }
 
     return .noContent

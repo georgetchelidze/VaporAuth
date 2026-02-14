@@ -2,7 +2,7 @@ import Fluent
 import Vapor
 
 extension Auth {
-    public final class OneTimeToken: Model, Content, @unchecked Sendable {
+    public final class OneTimeToken: Model, @unchecked Sendable {
         public static let schema = "one_time_tokens"
         public static let space: String? = Auth.space
 

@@ -47,5 +47,6 @@ public enum AuthMigrations {
         app.migrations.add(AlterAuthSessionsIPToInetIfNeeded())
         app.migrations.add(HardenAuthRefreshTokens())
         app.migrations.add(HardenAuthUsersIndexes())
+        app.migrations.add(HardenAuthSchemaSecurity())
     }
 }

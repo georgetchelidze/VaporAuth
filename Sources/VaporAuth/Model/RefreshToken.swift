@@ -2,7 +2,7 @@ import Fluent
 import Vapor
 
 extension Auth {
-    public final class RefreshToken: Model, Content, @unchecked Sendable {
+    public final class RefreshToken: Model, @unchecked Sendable {
         public static let schema = "refresh_tokens"
         public static let space: String? = Auth.space
 

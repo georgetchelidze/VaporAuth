@@ -2,7 +2,7 @@ import Fluent
 import Vapor
 
 extension Auth {
-    public final class MFAAMRClaim: Model, Content, @unchecked Sendable {
+    public final class MFAAMRClaim: Model, @unchecked Sendable {
         public static let schema = "mfa_amr_claims"
         public static let space: String? = Auth.space
 

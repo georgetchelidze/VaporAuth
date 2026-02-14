@@ -2,7 +2,7 @@ import Fluent
 import Vapor
 
 extension Auth {
-    public final class MFAFactor: Model, Content, @unchecked Sendable {
+    public final class MFAFactor: Model, @unchecked Sendable {
         public static let schema = "mfa_factors"
         public static let space: String? = Auth.space
 

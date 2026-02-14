@@ -2,7 +2,7 @@ import Fluent
 import Vapor
 
 extension Auth {
-    public final class OAuthClient: Model, Content, @unchecked Sendable {
+    public final class OAuthClient: Model, @unchecked Sendable {
         public static let schema = "oauth_clients"
         public static let space: String? = Auth.space
 

@@ -2,7 +2,7 @@ import Fluent
 import Vapor
 
 extension Auth {
-    public final class SAMLProvider: Model, Content, @unchecked Sendable {
+    public final class SAMLProvider: Model, @unchecked Sendable {
         public static let schema = "saml_providers"
         public static let space: String? = Auth.space
 

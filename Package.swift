@@ -28,6 +28,13 @@ let package = Package(
             swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
             ]
+        ),
+        .testTarget(
+            name: "VaporAuthTests",
+            dependencies: [
+                "VaporAuth"
+            ],
+            path: "Tests/VaporAuthTests"
         )
     ]
 )

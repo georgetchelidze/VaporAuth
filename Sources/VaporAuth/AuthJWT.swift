@@ -37,12 +37,34 @@ public struct AuthUserPayload: JWTPayload, Authenticatable, Content, Sendable {
     public func verify(using _: some JWTAlgorithm) async throws {
         try expiration.verifyNotExpired()
     }
+
+    public func validateExpectedClaims(expectedIssuer: String?, expectedAudience: String?) throws {
+        if let expectedIssuer {
+            guard issuer?.value == expectedIssuer else {
+                throw Abort(.unauthorized, reason: "Invalid token issuer")
+            }
+        }
+
+        if let expectedAudience {
+            guard let audiences = audience?.value,
+                  audiences.contains(expectedAudience)
+            else {
+                throw Abort(.unauthorized, reason: "Invalid token audience")
+            }
+        }
+    }
 }
 
 public struct AuthJWTUserAuthenticator: AsyncRequestAuthenticator {
     public typealias User = AuthUserPayload
 
-    public init() {}
+    public var expectedIssuer: String?
+    public var expectedAudience: String?
+
+    public init(expectedIssuer: String? = nil, expectedAudience: String? = nil) {
+        self.expectedIssuer = expectedIssuer
+        self.expectedAudience = expectedAudience
+    }
 
     public func authenticate(request: Request) async throws {
         guard request.headers.bearerAuthorization != nil else {
@@ -51,6 +73,10 @@ public struct AuthJWTUserAuthenticator: AsyncRequestAuthenticator {
 
         do {
             let payload = try await request.jwt.verify(as: AuthUserPayload.self)
+            try payload.validateExpectedClaims(
+                expectedIssuer: expectedIssuer,
+                expectedAudience: expectedAudience
+            )
             request.auth.login(payload)
         } catch {
             request.auth.logout(AuthUserPayload.self)

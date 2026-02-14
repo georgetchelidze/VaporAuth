@@ -1,3 +1,4 @@
+import Crypto
 import Fluent
 import FluentSQL
 import JWT
@@ -12,21 +13,33 @@ public enum AuthRoute: String, CaseIterable, Hashable, Sendable {
 public struct AuthRouteOptions: Sendable {
     public var tokenPath: PathComponent
     public var accessTokenTTLSeconds: Int
+    public var sessionLifetimeSeconds: Int?
+    public var refreshTokenIdleTimeoutSeconds: Int?
     public var audience: String
     public var issuer: String?
+    public var confirmationPolicy: AuthConfirmationPolicy
+    public var passwordGrantRateLimit: PasswordGrantRateLimitOptions
     public var enabledRoutes: Set<AuthRoute>
 
     public init(
         tokenPath: PathComponent = "token",
         accessTokenTTLSeconds: Int = 3600,
+        sessionLifetimeSeconds: Int? = 2_592_000,
+        refreshTokenIdleTimeoutSeconds: Int? = 2_592_000,
         audience: String = "authenticated",
         issuer: String? = nil,
+        confirmationPolicy: AuthConfirmationPolicy = .requireConfirmedEmail,
+        passwordGrantRateLimit: PasswordGrantRateLimitOptions = .init(),
         enabledRoutes: Set<AuthRoute> = Set(AuthRoute.allCases)
     ) {
         self.tokenPath = tokenPath
         self.accessTokenTTLSeconds = accessTokenTTLSeconds
+        self.sessionLifetimeSeconds = sessionLifetimeSeconds
+        self.refreshTokenIdleTimeoutSeconds = refreshTokenIdleTimeoutSeconds
         self.audience = audience
         self.issuer = issuer
+        self.confirmationPolicy = confirmationPolicy
+        self.passwordGrantRateLimit = passwordGrantRateLimit
         self.enabledRoutes = enabledRoutes
     }
 }
@@ -53,8 +66,13 @@ public enum AuthRoutes {
         }
 
         if options.enabledRoutes.contains(.me) {
-            let protected = auth.grouped(AuthJWTUserAuthenticator())
-                .grouped(AuthUserPayload.guardMiddleware())
+            let protected = auth.grouped(
+                AuthJWTUserAuthenticator(
+                    expectedIssuer: options.issuer,
+                    expectedAudience: options.audience
+                )
+            )
+            .grouped(AuthUserPayload.guardMiddleware())
             protected.get("me", use: me)
         }
     }
@@ -118,6 +136,22 @@ private extension Auth {
     }
 }
 
+private struct RefreshTokenParts {
+    let sessionID: UUID
+    let counter: Int64
+}
+
+private struct RefreshTokenIssue {
+    let rawToken: String
+    let tokenHash: String
+    let counter: Int64
+}
+
+private enum RefreshGrantFailure: Error {
+    case invalid
+    case replayDetected
+}
+
 private func token(req: Request, options: AuthRouteOptions) async throws -> AuthTokenResponse {
     let input = try req.content.decode(AuthTokenRequest.self)
     switch input.grantType {
@@ -143,59 +177,116 @@ private func passwordGrant(
         throw Abort(.badRequest, reason: "email and password are required")
     }
 
+    let rateLimitKeys = passwordGrantRateLimitKeys(
+        ipAddress: req.remoteAddress?.ipAddress,
+        email: email
+    )
+
+    let rateLimitCheckTime = Date()
+    if await req.application.vaporAuthPasswordGrantRateLimiter.isBlocked(
+        keys: rateLimitKeys,
+        now: rateLimitCheckTime,
+        options: options.passwordGrantRateLimit
+    ) {
+        throw Abort(.tooManyRequests, reason: "Too many login attempts. Try again later.")
+    }
+
     guard let user = try await Auth.User.query(on: req.db)
         .filter(\.$email == email)
         .first()
     else {
+        await registerPasswordGrantFailure(req: req, keys: rateLimitKeys, options: options)
         throw Abort(.unauthorized, reason: "Invalid credentials")
     }
 
     guard let userID = user.id,
-          let hash = user.encryptedPassword,
-          try Bcrypt.verify(password, created: hash)
+          let hash = user.encryptedPassword
     else {
+        await registerPasswordGrantFailure(req: req, keys: rateLimitKeys, options: options)
+        throw Abort(.unauthorized, reason: "Invalid credentials")
+    }
+
+    let passwordMatches: Bool
+    do {
+        passwordMatches = try Bcrypt.verify(password, created: hash)
+    } catch {
+        passwordMatches = false
+    }
+
+    guard passwordMatches else {
+        await registerPasswordGrantFailure(req: req, keys: rateLimitKeys, options: options)
         throw Abort(.unauthorized, reason: "Invalid credentials")
     }
 
     let now = Date()
-    user.lastSignInAt = now
-    user.updatedAt = now
-    try await user.save(on: req.db)
-
-    let session = Auth.Session()
-    session.id = UUID()
-    session.userId = userID
-    session.createdAt = now
-    session.updatedAt = now
-    session.refreshedAt = now
-    session.aal = .aal1
-    session.ip = nil
-    session.userAgent = req.headers.first(name: .userAgent)
-    try await session.save(on: req.db)
-
-    if let ipAddress = req.remoteAddress?.ipAddress,
-       let sessionID = session.id,
-       let sql = req.db as? any SQLDatabase {
-        do {
-            try await sql.raw("UPDATE auth.sessions SET ip = \(bind: ipAddress)::inet WHERE id = \(bind: sessionID)").run()
-        } catch {
-            req.logger.debug("VaporAuth: failed to persist session ip as inet: \(error)")
-        }
+    guard isUserEligibleForPasswordGrant(user, now: now, confirmationPolicy: options.confirmationPolicy) else {
+        await registerPasswordGrantFailure(req: req, keys: rateLimitKeys, options: options)
+        throw Abort(.unauthorized, reason: "Invalid credentials")
     }
 
-    let refreshToken = Auth.RefreshToken()
-    refreshToken.token = [UUID().uuidString, UUID().uuidString].joined()
-    refreshToken.userId = userID.uuidString
-    refreshToken.revoked = false
-    refreshToken.createdAt = now
-    refreshToken.updatedAt = now
-    refreshToken.sessionId = session.id
-    try await refreshToken.save(on: req.db)
+    let refreshTokenValue = try await req.db.transaction { db in
+        user.lastSignInAt = now
+        user.updatedAt = now
+        try await user.save(on: db)
+
+        let session = Auth.Session()
+        session.id = UUID()
+        session.userId = userID
+        session.createdAt = now
+        session.updatedAt = now
+        session.refreshedAt = now
+        session.aal = .aal1
+        session.ip = nil
+        session.userAgent = req.headers.first(name: .userAgent)
+        session.refreshTokenHmacKey = randomTokenSecret()
+        session.refreshTokenCounter = 0
+        if let sessionLifetimeSeconds = options.sessionLifetimeSeconds,
+           sessionLifetimeSeconds > 0 {
+            session.notAfter = now.addingTimeInterval(TimeInterval(sessionLifetimeSeconds))
+        }
+        try await session.save(on: db)
+
+        if let ipAddress = req.remoteAddress?.ipAddress,
+           let sessionID = session.id,
+           let sql = db as? any SQLDatabase {
+            do {
+                try await sql.raw("UPDATE auth.sessions SET ip = \(bind: ipAddress)::inet WHERE id = \(bind: sessionID)").run()
+            } catch {
+                req.logger.debug("VaporAuth: failed to persist session ip as inet: \(error)")
+            }
+        }
+
+        guard let sessionID = session.id,
+              let hmacKey = session.refreshTokenHmacKey,
+              let currentCounter = session.refreshTokenCounter
+        else {
+            throw Abort(.internalServerError, reason: "Session refresh state missing")
+        }
+
+        let issued = issueRefreshToken(sessionID: sessionID, hmacKey: hmacKey, previousCounter: currentCounter)
+
+        let refreshToken = Auth.RefreshToken()
+        refreshToken.token = issued.tokenHash
+        refreshToken.userId = userID.uuidString
+        refreshToken.revoked = false
+        refreshToken.createdAt = now
+        refreshToken.updatedAt = now
+        refreshToken.sessionId = sessionID
+        try await refreshToken.save(on: db)
+
+        session.refreshTokenCounter = issued.counter
+        session.updatedAt = now
+        try await session.save(on: db)
+
+        return issued.rawToken
+    }
+
+    await req.application.vaporAuthPasswordGrantRateLimiter.recordSuccess(keys: rateLimitKeys)
 
     return try await buildTokenResponse(
         req: req,
         user: user,
-        refreshToken: refreshToken,
+        refreshTokenValue: refreshTokenValue,
         options: options
     )
 }
@@ -211,61 +302,139 @@ private func refreshGrant(
         throw Abort(.badRequest, reason: "refresh_token is required")
     }
 
-    guard let existing = try await Auth.RefreshToken.query(on: req.db)
-        .filter(\.$token == rawToken)
-        .first(),
-          existing.revoked != true
-    else {
+    guard let parts = parseRefreshToken(rawToken) else {
         throw Abort(.unauthorized, reason: "Invalid refresh token")
     }
 
-    guard let userIDString = existing.userId,
-          let userID = UUID(uuidString: userIDString),
-          let user = try await Auth.User.find(userID, on: req.db)
-    else {
-        throw Abort(.unauthorized, reason: "Invalid refresh token")
+    do {
+        let result = try await req.db.transaction { db in
+            guard let sql = db as? any SQLDatabase else {
+                throw Abort(.internalServerError, reason: "SQL database required")
+            }
+
+            try await sql.raw("SELECT pg_advisory_xact_lock(hashtext(\(bind: parts.sessionID.uuidString)))").run()
+
+            guard let session = try await Auth.Session.find(parts.sessionID, on: db),
+                  let sessionUserID = session.userId,
+                  let hmacKey = session.refreshTokenHmacKey,
+                  let currentCounter = session.refreshTokenCounter
+            else {
+                throw RefreshGrantFailure.invalid
+            }
+
+            let now = Date()
+            let resolvedNotAfter = sessionExpiryDate(
+                for: session,
+                fallbackLifetimeSeconds: options.sessionLifetimeSeconds
+            )
+            if let resolvedNotAfter,
+               resolvedNotAfter <= now {
+                throw RefreshGrantFailure.invalid
+            }
+            if session.notAfter == nil,
+               let resolvedNotAfter {
+                session.notAfter = resolvedNotAfter
+            }
+
+            let providedTokenHash = hashRefreshToken(rawToken, hmacKey: hmacKey)
+            guard let existing = try await Auth.RefreshToken.query(on: db)
+                .filter(\.$sessionId == parts.sessionID)
+                .filter(\.$token == providedTokenHash)
+                .first()
+            else {
+                // If this token is older than the latest issued one, treat as replay and burn the whole session.
+                if parts.counter < currentCounter {
+                    try await revokeSessionRefreshTokens(sessionID: parts.sessionID, now: now, on: db)
+                    session.notAfter = now
+                    session.updatedAt = now
+                    try await session.save(on: db)
+                    throw RefreshGrantFailure.replayDetected
+                }
+                throw RefreshGrantFailure.invalid
+            }
+
+            if existing.revoked == true || parts.counter < currentCounter {
+                try await revokeSessionRefreshTokens(sessionID: parts.sessionID, now: now, on: db)
+                session.notAfter = now
+                session.updatedAt = now
+                try await session.save(on: db)
+                throw RefreshGrantFailure.replayDetected
+            }
+
+            guard parts.counter == currentCounter else {
+                throw RefreshGrantFailure.invalid
+            }
+
+            if let refreshTokenIdleTimeoutSeconds = options.refreshTokenIdleTimeoutSeconds,
+               refreshTokenIdleTimeoutSeconds > 0 {
+                guard let refreshCreatedAt = existing.createdAt,
+                      refreshCreatedAt.addingTimeInterval(TimeInterval(refreshTokenIdleTimeoutSeconds)) > now
+                else {
+                    try await revokeSessionRefreshTokens(sessionID: parts.sessionID, now: now, on: db)
+                    session.notAfter = now
+                    session.updatedAt = now
+                    try await session.save(on: db)
+                    throw RefreshGrantFailure.invalid
+                }
+            }
+
+            guard let user = try await Auth.User.find(sessionUserID, on: db),
+                  let userID = user.id,
+                  isUserActiveForSessionIssuance(user, now: now)
+            else {
+                try await revokeSessionRefreshTokens(sessionID: parts.sessionID, now: now, on: db)
+                session.notAfter = now
+                session.updatedAt = now
+                try await session.save(on: db)
+                throw RefreshGrantFailure.invalid
+            }
+
+            existing.revoked = true
+            existing.updatedAt = now
+            try await existing.save(on: db)
+
+            let issued = issueRefreshToken(sessionID: parts.sessionID, hmacKey: hmacKey, previousCounter: currentCounter)
+
+            let newToken = Auth.RefreshToken()
+            newToken.token = issued.tokenHash
+            newToken.userId = userID.uuidString
+            newToken.revoked = false
+            newToken.createdAt = now
+            newToken.updatedAt = now
+            newToken.parent = providedTokenHash
+            newToken.sessionId = parts.sessionID
+            try await newToken.save(on: db)
+
+            session.refreshTokenCounter = issued.counter
+            session.refreshedAt = now
+            session.updatedAt = now
+            try await session.save(on: db)
+
+            return (user, issued.rawToken)
+        }
+
+        return try await buildTokenResponse(
+            req: req,
+            user: result.0,
+            refreshTokenValue: result.1,
+            options: options
+        )
+    } catch let failure as RefreshGrantFailure {
+        switch failure {
+        case .invalid, .replayDetected:
+            throw Abort(.unauthorized, reason: "Invalid refresh token")
+        }
     }
-
-    existing.revoked = true
-    existing.updatedAt = Date()
-    try await existing.save(on: req.db)
-
-    let newToken = Auth.RefreshToken()
-    newToken.token = [UUID().uuidString, UUID().uuidString].joined()
-    newToken.userId = userID.uuidString
-    newToken.revoked = false
-    newToken.createdAt = Date()
-    newToken.updatedAt = Date()
-    newToken.parent = rawToken
-    newToken.sessionId = existing.sessionId
-    try await newToken.save(on: req.db)
-
-    if let sessionID = existing.sessionId,
-       let session = try await Auth.Session.find(sessionID, on: req.db) {
-        session.refreshedAt = Date()
-        session.updatedAt = Date()
-        try await session.save(on: req.db)
-    }
-
-    return try await buildTokenResponse(
-        req: req,
-        user: user,
-        refreshToken: newToken,
-        options: options
-    )
 }
 
 private func buildTokenResponse(
     req: Request,
     user: Auth.User,
-    refreshToken: Auth.RefreshToken,
+    refreshTokenValue: String,
     options: AuthRouteOptions
 ) async throws -> AuthTokenResponse {
     guard let userID = user.id else {
         throw Abort(.internalServerError, reason: "User has no id")
-    }
-    guard let refreshTokenValue = refreshToken.token else {
-        throw Abort(.internalServerError, reason: "Refresh token missing")
     }
 
     let expiresAt = Date(timeIntervalSinceNow: TimeInterval(options.accessTokenTTLSeconds))
@@ -273,7 +442,7 @@ private func buildTokenResponse(
         subject: .init(value: userID.uuidString),
         email: user.email,
         expiration: .init(value: expiresAt),
-        audience: .init(value: [user.aud ?? options.audience]),
+        audience: .init(value: [options.audience]),
         issuer: options.issuer.map { .init(value: $0) },
         role: user.role
     )
@@ -318,13 +487,18 @@ private func me(req: Request) async throws -> Auth.UserResponse {
 private func logout(req: Request) async throws -> HTTPStatus {
     let input = try req.content.decode(AuthLogoutRequest.self)
     guard let rawToken = input.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !rawToken.isEmpty
+          !rawToken.isEmpty,
+          let parts = parseRefreshToken(rawToken),
+          let session = try await Auth.Session.find(parts.sessionID, on: req.db),
+          let hmacKey = session.refreshTokenHmacKey
     else {
         return .noContent
     }
 
+    let tokenHash = hashRefreshToken(rawToken, hmacKey: hmacKey)
     if let token = try await Auth.RefreshToken.query(on: req.db)
-        .filter(\.$token == rawToken)
+        .filter(\.$sessionId == parts.sessionID)
+        .filter(\.$token == tokenHash)
         .first() {
         token.revoked = true
         token.updatedAt = Date()
@@ -332,4 +506,67 @@ private func logout(req: Request) async throws -> HTTPStatus {
     }
 
     return .noContent
+}
+
+private func randomTokenSecret() -> String {
+    [UUID().uuidString.replacingOccurrences(of: "-", with: ""), UUID().uuidString.replacingOccurrences(of: "-", with: "")]
+        .joined()
+}
+
+private func issueRefreshToken(sessionID: UUID, hmacKey: String, previousCounter: Int64) -> RefreshTokenIssue {
+    let nextCounter = previousCounter + 1
+    let nonce = randomTokenSecret()
+    let rawToken = "v1.\(sessionID.uuidString).\(nextCounter).\(nonce)"
+    return .init(
+        rawToken: rawToken,
+        tokenHash: hashRefreshToken(rawToken, hmacKey: hmacKey),
+        counter: nextCounter
+    )
+}
+
+private func parseRefreshToken(_ rawToken: String) -> RefreshTokenParts? {
+    let parts = rawToken.split(separator: ".", omittingEmptySubsequences: false)
+    guard parts.count == 4,
+          parts[0] == "v1",
+          let sessionID = UUID(uuidString: String(parts[1])),
+          let counter = Int64(parts[2]),
+          counter > 0,
+          !parts[3].isEmpty
+    else {
+        return nil
+    }
+
+    return .init(sessionID: sessionID, counter: counter)
+}
+
+private func hashRefreshToken(_ rawToken: String, hmacKey: String) -> String {
+    let key = SymmetricKey(data: Data(hmacKey.utf8))
+    let digest = HMAC<SHA256>.authenticationCode(for: Data(rawToken.utf8), using: key)
+    return Data(digest).hexString
+}
+
+private func revokeSessionRefreshTokens(sessionID: UUID, now: Date, on db: any Database) async throws {
+    try await Auth.RefreshToken.query(on: db)
+        .filter(\.$sessionId == sessionID)
+        .set(\.$revoked, to: true)
+        .set(\.$updatedAt, to: now)
+        .update()
+}
+
+private func registerPasswordGrantFailure(
+    req: Request,
+    keys: [String],
+    options: AuthRouteOptions
+) async {
+    await req.application.vaporAuthPasswordGrantRateLimiter.recordFailure(
+        keys: keys,
+        now: Date(),
+        options: options.passwordGrantRateLimit
+    )
+}
+
+private extension Data {
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
 }

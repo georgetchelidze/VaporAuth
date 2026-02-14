@@ -45,5 +45,7 @@ public enum AuthMigrations {
     /// This lets the call site stay a single line: `AuthMigrations.register(on: app)`.
     public static func registerAdditions(on app: Application) {
         app.migrations.add(AlterAuthSessionsIPToInetIfNeeded())
+        app.migrations.add(HardenAuthRefreshTokens())
+        app.migrations.add(HardenAuthUsersIndexes())
     }
 }

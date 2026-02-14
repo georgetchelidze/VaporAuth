@@ -28,3 +28,23 @@ AuthRoutes.register(
     enabledRoutes: [.token, .me]
 )
 ```
+
+Configure security behavior:
+```swift
+AuthRoutes.register(
+    on: app.routes,
+    options: .init(
+        accessTokenTTLSeconds: 3600,
+        sessionLifetimeSeconds: 2_592_000,            // 30 days
+        refreshTokenIdleTimeoutSeconds: 2_592_000,    // 30 days
+        audience: "authenticated",
+        issuer: "https://your-auth.example",
+        confirmationPolicy: .requireConfirmedEmail,
+        passwordGrantRateLimit: .init(
+            maxAttempts: 10,
+            windowSeconds: 60,
+            blockSeconds: 300
+        )
+    )
+)
+```

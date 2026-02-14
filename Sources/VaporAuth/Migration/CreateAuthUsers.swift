@@ -42,6 +42,16 @@ struct CreateAuthUsers: AsyncMigration {
                 deleted_at timestamptz,
                 is_anonymous boolean
             );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS users_email_partial_key
+                ON auth.users (email)
+                WHERE is_sso_user = false;
+            CREATE INDEX IF NOT EXISTS users_instance_id_email_idx
+                ON auth.users (instance_id, lower(email));
+            CREATE INDEX IF NOT EXISTS users_instance_id_idx
+                ON auth.users (instance_id);
+            CREATE INDEX IF NOT EXISTS users_is_anonymous_idx
+                ON auth.users (is_anonymous);
             """).run()
     }
 

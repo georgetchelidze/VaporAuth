@@ -14,8 +14,17 @@ struct CreateAuthRefreshTokens: AsyncMigration {
                 created_at timestamptz,
                 updated_at timestamptz,
                 parent text,
-                session_id uuid
+                session_id uuid,
+                CONSTRAINT refresh_tokens_token_unique UNIQUE (token),
+                CONSTRAINT refresh_tokens_session_id_fkey FOREIGN KEY (session_id) REFERENCES auth.sessions(id) ON DELETE CASCADE
             );
+
+            CREATE INDEX IF NOT EXISTS refresh_tokens_parent_idx
+                ON auth.refresh_tokens (parent);
+            CREATE INDEX IF NOT EXISTS refresh_tokens_session_id_revoked_idx
+                ON auth.refresh_tokens (session_id, revoked);
+            CREATE INDEX IF NOT EXISTS refresh_tokens_updated_at_idx
+                ON auth.refresh_tokens (updated_at DESC);
             """).run()
     }
 

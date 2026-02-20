@@ -1,5 +1,6 @@
 import Fluent
 import Vapor
+import JSONValue
 
 extension Auth {
     public final class User: Model, @unchecked Sendable {
@@ -55,10 +56,10 @@ extension Auth {
         public var lastSignInAt: Date?
 
         @OptionalField(key: "raw_app_meta_data")
-        public var rawAppMetaData: [String: DynamicJSON]?
+        public var rawAppMetaData: [String: JSONValue]?
 
         @OptionalField(key: "raw_user_meta_data")
-        public var rawUserMetaData: [String: DynamicJSON]?
+        public var rawUserMetaData: [String: JSONValue]?
 
         @OptionalField(key: "is_super_admin")
         public var isSuperAdmin: Bool?

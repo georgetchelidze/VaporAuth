@@ -1,5 +1,6 @@
 import Fluent
 import Vapor
+import JSONValue
 
 extension Auth {
     public final class SAMLProvider: Model, @unchecked Sendable {
@@ -22,7 +23,7 @@ extension Auth {
         public var metadataUrl: String?
 
         @OptionalField(key: "attribute_mapping")
-        public var attributeMapping: [String: DynamicJSON]?
+        public var attributeMapping: [String: JSONValue]?
 
         @OptionalField(key: "created_at")
         public var createdAt: Date?

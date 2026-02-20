@@ -1,5 +1,6 @@
 import Fluent
 import Vapor
+import JSONValue
 
 extension Auth {
     public final class MFAFactor: Model, @unchecked Sendable {
@@ -37,13 +38,13 @@ extension Auth {
         public var lastChallengedAt: Date?
 
         @OptionalField(key: "web_authn_credential")
-        public var webAuthnCredential: [String: DynamicJSON]?
+        public var webAuthnCredential: [String: JSONValue]?
 
         @OptionalField(key: "web_authn_aaguid")
         public var webAuthnAaguid: UUID?
 
         @OptionalField(key: "last_webauthn_challenge_data")
-        public var lastWebauthnChallengeData: [String: DynamicJSON]?
+        public var lastWebauthnChallengeData: [String: JSONValue]?
 
         public init() {}
     }

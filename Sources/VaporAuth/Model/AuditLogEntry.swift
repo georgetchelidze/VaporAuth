@@ -1,5 +1,6 @@
 import Fluent
 import Vapor
+import JSONValue
 
 extension Auth {
     public final class AuditLogEntry: Model, @unchecked Sendable {
@@ -13,7 +14,7 @@ extension Auth {
         public var instanceId: UUID?
 
         @OptionalField(key: "payload")
-        public var payload: [String: DynamicJSON]?
+        public var payload: [String: JSONValue]?
 
         @OptionalField(key: "created_at")
         public var createdAt: Date?

@@ -1,5 +1,6 @@
 import Fluent
 import Vapor
+import JSONValue
 
 extension Auth {
     public final class MFAChallenge: Model, @unchecked Sendable {
@@ -25,7 +26,7 @@ extension Auth {
         public var otpCode: String?
 
         @OptionalField(key: "web_authn_session_data")
-        public var webAuthnSessionData: [String: DynamicJSON]?
+        public var webAuthnSessionData: [String: JSONValue]?
 
         public init() {}
     }

@@ -1,5 +1,6 @@
 import Fluent
 import Vapor
+import JSONValue
 
 extension Auth {
     public final class Identity: Model, @unchecked Sendable {
@@ -16,7 +17,7 @@ extension Auth {
         public var userId: UUID?
 
         @OptionalField(key: "identity_data")
-        public var identityData: [String: DynamicJSON]?
+        public var identityData: [String: JSONValue]?
 
         @OptionalField(key: "provider")
         public var provider: String?
